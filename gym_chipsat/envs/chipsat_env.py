@@ -17,42 +17,37 @@ class ChipSatEnv(gym.Env):
         algorithm to stabilize the mechanism within a reasonable time.
 
     Observation: dr per second
-        Type: Box(4)
+        Type: Box(3)
         Num	Observation             Min             Max
-        0	Gyroscope x axis       -0.5             0.5
-        1	Gyroscope y axis       -0.5             0.5
-        3	Latitude               -100             100
-        4	Longitude              -100             100
-        5   Power                     0             200
+        0	Gyroscope x axis         -1               1
+        1	Gyroscope y axis         -1               1
+        5   Power                     0               1
         
     Actions:
         Type: Box(2)
         Num	Action
-        0	Magnetorquer X            0              100
-        0	Magnetorquer Y            0              100
+        0	Magnetorquer X            0               1
+        0	Magnetorquer Y            0               1
         
-        Note: The amount the velocity that is reduced or increased is not fixed;
-        it depends on the angle the pole is pointing. This is because the center
-        of gravity of the pole increases the amount of energy needed to move the
-        cart underneath it
+    NOTE: Activation of the magnetorquer to its full value (1) would consume 0.05
+    units of power, whereas no activation at all would still consume 0.0005 unit,
+    everything in between would be linear in betweek.
 
     Reward:
         Reward is calculated as the ability to reach gyroscope values of 0 while
-        keeping power above 0
+        keeping power above 0. If any action changes the gyroscope value closer
+        to 0, then the reward is incremented.
 
     Starting State:
         Gyro observations are assigned a uniform random value between its boundaries,
-        the position will vary between (-20, 20), with 200 units of power and
-        magnetorquer at 0.
+        Power is initialized to 1.
 
     Episode Termination:
         Power is 0
-        ChipSat position is more than 90 in either way
-        Episode length is greater than 300
-    
+        
     Solved Requirements:
-        Considered solved when the average reward is greater than or equal to
-        195.0 over 100 consecutive trials.
+        Considered solved when the gyroscope values are 0 and power is greater
+        than 0 for 10 consecutive trials.
     """
     
     metadata = {
@@ -61,8 +56,12 @@ class ChipSatEnv(gym.Env):
     }
 
     def __init__(self):
-        self.gravity = 9.8
-        self.masscart = 1.0
+        self.massCS = 1.0
+        self.powerCS = 1.0
+        
+        
+        self.gravity = 0.5
+        self.masscart = 1
         self.masspole = 0.1
         self.total_mass = (self.masspole + self.masscart)
         self.length = 0.5 # actually half the pole's length
@@ -82,6 +81,7 @@ class ChipSatEnv(gym.Env):
             self.theta_threshold_radians * 2,
             np.finfo(np.float32).max])
 
+        # self.action_space = spaces.Box(2)
         self.action_space = spaces.Discrete(2)
         self.observation_space = spaces.Box(-high, high, dtype=np.float32)
 
@@ -151,7 +151,7 @@ class ChipSatEnv(gym.Env):
 
         world_width = self.x_threshold*2
         scale = screen_width/world_width
-        carty = 100 # TOP OF CART
+        carty = 200 # TOP OF CART
         polewidth = 10.0
         polelen = scale * (2 * self.length)
         cartwidth = 50.0
