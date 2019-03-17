@@ -9,6 +9,8 @@ from gym import spaces, logger
 from gym.utils import seeding
 import numpy as np
 
+import serial
+
 class ChipSatEnv(gym.Env):
     """
     Description:
@@ -56,11 +58,29 @@ class ChipSatEnv(gym.Env):
     }
 
     def __init__(self):
+        high = 1
         self.massCS = 1.0
         self.powerCS = 1.0
+        self.gyroX = 0
+        self.gyroY = 0
+        self.posX = 0
+        self.posY = 0
+        self.tau = 0.02  # seconds between state updates
+        self.minPower = 0.0005
+        self.maxPower = 0.05
+        self.action_space = spaces.Box(0, high, dtype=np.float32, shape=(2,))
+        self.observation_space = spaces.Box(-high, high, dtype=np.float32, shape=(3,))
+        self.csState = None
+        self.counter = None
+        
+        self.enableSerial = True
+        
+        ##### This is the serial part, i
+        if self.enableSerial:
+            self.ser = serial.Serial('/dev/tty.usbmodem14501')
         
         
-        self.gravity = 0.5
+        self.gravity = 9.8
         self.masscart = 1
         self.masspole = 0.1
         self.total_mass = (self.masspole + self.masscart)
@@ -81,7 +101,6 @@ class ChipSatEnv(gym.Env):
             self.theta_threshold_radians * 2,
             np.finfo(np.float32).max])
 
-        # self.action_space = spaces.Box(2)
         self.action_space = spaces.Discrete(2)
         self.observation_space = spaces.Box(-high, high, dtype=np.float32)
 
@@ -96,40 +115,47 @@ class ChipSatEnv(gym.Env):
         return [seed]
 
     def step(self, action):
-        assert self.action_space.contains(action), "%r (%s) invalid"%(action, type(action))
-        state = self.state
-        x, x_dot, theta, theta_dot = state
-        force = self.force_mag if action==1 else -self.force_mag
-        costheta = math.cos(theta)
-        sintheta = math.sin(theta)
-        temp = (force + self.polemass_length * theta_dot * theta_dot * sintheta) / self.total_mass
-        thetaacc = (self.gravity * sintheta - costheta* temp) / (self.length * (4.0/3.0 - self.masspole * costheta * costheta / self.total_mass))
-        xacc  = temp - self.polemass_length * thetaacc * costheta / self.total_mass
-        if self.kinematics_integrator == 'euler':
-            x  = x + self.tau * x_dot
-            x_dot = x_dot + self.tau * xacc
-            theta = theta + self.tau * theta_dot
-            theta_dot = theta_dot + self.tau * thetaacc
-        else: # semi-implicit euler
-            x_dot = x_dot + self.tau * xacc
-            x  = x + self.tau * x_dot
-            theta_dot = theta_dot + self.tau * thetaacc
-            theta = theta + self.tau * theta_dot
-        self.state = (x,x_dot,theta,theta_dot)
-        done = False
-        # done =  x < -self.x_threshold \
-        #         or x > self.x_threshold \
-        #         or theta < -self.theta_threshold_radians \
-        #         or theta > self.theta_threshold_radians
-        # done = bool(done)
-        # print ("Done: " + done)
-
+        ########### Simlate a reset
+        self.csState = self.np_random.uniform(-1, 1, size=(3,))
+        self.csState[2] = self.np_random.uniform(0, 1)
+        magX = self.np_random.uniform(0,1)
+        magY = self.np_random.uniform(0,1)
+        action = np.array([magX, magY])
+        
+        # assert self.action_space.contains(action), "%r (%s) invalid"%(action, type(action))
+        csState = self.csState
+        
+        gyroX, gyroY, powerCS = csState
+        forceX = action[0]
+        forceY = action[1]
+        
+        powerFX = max(min(forceX * self.minPower / self.maxPower, self.maxPower), self.minPower)
+        powerFY = max(min(forceX * self.minPower / self.maxPower, self.maxPower), self.minPower)
+        
+        self.powerCS -= powerFX + powerFY
+        
+        cosX = math.cos(forceX)
+        sinY = math.sin(forceY)
+        
+        self.gyroX = forceX * cosX
+        self.gyroY = forceY * sinY
+        
+        print(self.gyroX)
+        print(self.gyroY)
+        # x  = x + self.tau * x_dot
+        # x_dot = x_dot + self.tau * xacc
+        # theta = theta + self.tau * theta_dot
+        # theta_dot = theta_dot + self.tau * thetaacc
+        
+        self.state = (self.gyroX, self.gyroY, self.powerCS)
+        done = self.powerCS < 0
+        
         if not done:
-            reward = 1.0
+            reward = self.powerCS + math.sqrt(((-self.gyroX) ** 2) + ((-self.gyroY) ** 2))
         elif self.steps_beyond_done is None:
             # Pole just fell!
             self.steps_beyond_done = 0
-            reward = 1.0
+            reward = 0
         else:
             if self.steps_beyond_done == 0:
                 logger.warn("You are calling 'step()' even though this environment\
@@ -137,8 +163,8 @@ class ChipSatEnv(gym.Env):
                 once you receive 'done = True' -- any further steps are undefined behavior.")
             self.steps_beyond_done += 1
             reward = 0.0
-
-        return np.array(self.state), reward, done, {}
+        
+        return np.array(self.csState), reward, done, {}
 
     def reset(self):
         self.state = self.np_random.uniform(low=-0.05, high=0.05, size=(4,))
@@ -146,55 +172,69 @@ class ChipSatEnv(gym.Env):
         return np.array(self.state)
 
     def render(self, mode='human'):
-        screen_width = 600
-        screen_height = 400
+        screen_width = 1024
+        screen_height = 800
 
         world_width = self.x_threshold*2
         scale = screen_width/world_width
-        carty = 200 # TOP OF CART
+        carty = 100 # TOP OF CART
         polewidth = 10.0
         polelen = scale * (2 * self.length)
-        cartwidth = 50.0
-        cartheight = 30.0
+        
+        csWidth = screen_width/5
+        csHeight = screen_width/7
 
         if self.viewer is None:
             from gym.envs.classic_control import rendering
             self.viewer = rendering.Viewer(screen_width, screen_height)
-            l,r,t,b = -cartwidth/2, cartwidth/2, cartheight/2, -cartheight/2
-            axleoffset =cartheight/4.0
-            cart = rendering.FilledPolygon([(l,b), (l,t), (r,t), (r,b)])
-            self.carttrans = rendering.Transform()
-            cart.add_attr(self.carttrans)
-            self.viewer.add_geom(cart)
-            l,r,t,b = -polewidth/2,polewidth/2,polelen-polewidth/2,-polewidth/2
-            pole = rendering.FilledPolygon([(l,b), (l,t), (r,t), (r,b)])
-            pole.set_color(.8,.6,.4)
-            self.poletrans = rendering.Transform(translation=(0, axleoffset))
-            pole.add_attr(self.poletrans)
-            pole.add_attr(self.carttrans)
-            self.viewer.add_geom(pole)
-            self.axle = rendering.make_circle(polewidth/2)
-            self.axle.add_attr(self.poletrans)
-            self.axle.add_attr(self.carttrans)
-            self.axle.set_color(.5,.5,.8)
-            self.viewer.add_geom(self.axle)
-            self.track = rendering.Line((0,carty), (screen_width,carty))
-            self.track.set_color(0,0,0)
-            self.viewer.add_geom(self.track)
 
-            self._pole_geom = pole
+            l,r,t,b = -csWidth/2, csWidth/2, csHeight/2, -csHeight/2
+            chipSat = rendering.FilledPolygon([(l,b), (l,t), (r,t), (r,b)])
+            self.csTrans = rendering.Transform()
+            chipSat.add_attr(self.csTrans)
+            self.viewer.add_geom(chipSat)
+            
+            axleoffset = csHeight/2.0 - csWidth/32
+            
+            l,r,t,b = -csWidth/32, csWidth/32, csHeight*2, -csHeight*2
+            csAntenna1 = rendering.FilledPolygon([(l,b), (l,t), (r,t), (r,b)])
+            csAntenna1.set_color(.3,.7,.2)
+            self.csAntennaTrans1 = rendering.Transform(translation=(axleoffset, 0))
+            csAntenna1.add_attr(self.csAntennaTrans1)
+            csAntenna1.add_attr(self.csTrans)
+            self.viewer.add_geom(csAntenna1)
+            
+            axleoffset = csHeight/2.0 - csWidth/32
+            
+            l,r,t,b = csHeight*2, -csHeight*2, -csWidth/32, csWidth/32,
+            csAntenna2 = rendering.FilledPolygon([(l,b), (l,t), (r,t), (r,b)])
+            csAntenna2.set_color(.8,.1,.3)
+            self.csAntennaTrans2 = rendering.Transform(translation=(axleoffset, 0))
+            csAntenna2.add_attr(self.csAntennaTrans2)
+            csAntenna2.add_attr(self.csTrans)
+            self.viewer.add_geom(csAntenna2)
+
 
         if self.state is None: return None
 
-        # Edit the pole polygon vertex
-        pole = self._pole_geom
-        l,r,t,b = -polewidth/2,polewidth/2,polelen-polewidth/2,-polewidth/2
-        pole.v = [(l,b), (l,t), (r,t), (r,b)]
-
-        x = self.state
-        cartx = x[0]*scale+screen_width/2.0 # MIDDLE OF CART
-        self.carttrans.set_translation(cartx, carty)
-        self.poletrans.set_rotation(-x[2])
+        if self.counter is None:
+            self.counter = 0
+        elif self.counter > 200 :
+            self.counter = 200
+        else: self.counter += 1
+        
+        # self.csTrans.set_translation(self.counter * 2, self.counter)
+        csX = scale + screen_width / 2.0 # MIDDLE OF CART
+        # self.csTrans.set_translation(csX, csX)
+        
+        ##### This is the serial part, i
+        self.csTrans.set_translation(250, 250)
+        
+        if self.enableSerial:
+            line = self.ser.readline()
+            self.csTrans.set_rotation(float(line) * math.pi / 180)
+        else:
+            self.csTrans.set_rotation(self.counter)
 
         return self.viewer.render(return_rgb_array = mode=='rgb_array')
 
