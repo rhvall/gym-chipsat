@@ -140,15 +140,18 @@ class ChipSatEnv(gym.Env):
         self.gyroX = forceX * cosX
         self.gyroY = forceY * sinY
         
-        print(self.gyroX)
-        print(self.gyroY)
         # x  = x + self.tau * x_dot
         # x_dot = x_dot + self.tau * xacc
         # theta = theta + self.tau * theta_dot
         # theta_dot = theta_dot + self.tau * thetaacc
         
         self.state = (self.gyroX, self.gyroY, self.powerCS)
-        done = self.powerCS < 0
+        
+        if self.enableSerial:
+            done = False
+        else:
+            done = self.powerCS < 0
+        
         
         if not done:
             reward = self.powerCS + math.sqrt(((-self.gyroX) ** 2) + ((-self.gyroY) ** 2))
@@ -228,7 +231,7 @@ class ChipSatEnv(gym.Env):
         # self.csTrans.set_translation(csX, csX)
         
         ##### This is the serial part, i
-        self.csTrans.set_translation(250, 250)
+        self.csTrans.set_translation(screen_width/2 - csWidth/2, screen_height/2 - csHeight/2)
         
         if self.enableSerial:
             line = self.ser.readline()
